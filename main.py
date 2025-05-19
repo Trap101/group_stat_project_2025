@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from icecream import ic
+from tqdm import tqdm
 import STOM_higgs_tools
-
+from STOM_higgs_tools import get_B_chi
 
 def exponential_distribution(x: np.ndarray, A: float, lamb: float) -> np.ndarray:
     #Exponential distribution function for background events.
@@ -23,16 +24,19 @@ def combined_distribution(x: np.ndarray, *params) -> np.ndarray:
     return exponential_distribution(x, A, lamb) + gaussian_distribution(x, B, mu, sigma)
 
 
+MASS_RANGE = (104, 155)
+NUM_BINS = 30
+# Estimate background parameters this is perceived between the two vertical lines in the histogram
+SIGNAL_REGION = (120, 130)
+
 def main():
     # Generate and prepare data
     amplitude_values = np.array(STOM_higgs_tools.generate_data())
     
     # Define histogram parameters
-    AMPLITUDE_RANGE = (104, 155)
-    NUM_BINS = 30
     
     # Create histogram
-    plt.figure(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(10, 6))
     
     # plt.hist returns bin_heights, bin_edges, patches
     # where bin_heights is the number of events in each bin
@@ -43,7 +47,7 @@ def main():
         alpha=0, 
         color='blue', 
         edgecolor='black', 
-        range=AMPLITUDE_RANGE
+        range=MASS_RANGE
     )
     
     # Calculate bin properties
@@ -53,8 +57,6 @@ def main():
     bin_width = bin_edges[1] - bin_edges[0]
     x_uncertainties = bin_width / 2
     
-    # Estimate background parameters this is perceived between the two vertical lines in the histogram
-    SIGNAL_REGION = (121, 128)
     background_values = np.concatenate((
         amplitude_values[amplitude_values < SIGNAL_REGION[0]],
         amplitude_values[amplitude_values > SIGNAL_REGION[1]]
@@ -82,8 +84,8 @@ def main():
     area_under_histogram = np.sum(bin_heights) * bin_width
     A_estimate = area_under_histogram / (
         lamb_estimate * 
-        (np.exp(-AMPLITUDE_RANGE[0]/lamb_estimate) - 
-         np.exp(-AMPLITUDE_RANGE[1]/lamb_estimate))
+        (np.exp(-MASS_RANGE[0]/lamb_estimate) - 
+         np.exp(-MASS_RANGE[1]/lamb_estimate))
     )
     # B_estimate has been obtained by taking the height of the peak of the gaussian shape in the histogram
     B_estimate = np.max(bin_heights)
@@ -107,24 +109,26 @@ def main():
     )
     
     # Plot results
-    x_fine = np.linspace(*AMPLITUDE_RANGE, 1000)
+    x_fine = np.linspace(*MASS_RANGE, 1000)
+
     
+
     # Plot combined distribution
-    plt.plot(
+    ax.plot(
         x_fine, 
         combined_distribution(x_fine, *fitted_params),
         label='Combined Distribution'
     )
     
     # Plot background distribution
-    plt.plot(
+    ax.plot(
         x_fine,
         exponential_distribution(x_fine, *fitted_params[:2]),
         label='Exponential Distribution'
     )
     
     # Plot error bars
-    plt.errorbar(
+    ax.errorbar(
         bin_centers, 
         bin_heights, 
         yerr=uncertainties, 
@@ -135,15 +139,87 @@ def main():
     )
     
     # Customize plot
-    plt.xlabel('Mass (GeV)')
-    plt.ylabel('Number of Events')
-    plt.title('Distribution of Signal and Background Events')
-    plt.grid(True, alpha=0.3)
-    plt.legend()
+    ax.set_xlabel('Mass (GeV)')
+    ax.set_ylabel('Number of Events')
+    ax.set_title('Distribution of Signal and Background Events')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
     
     # Save and display plot
-    plt.savefig('hist.png')
-    plt.show()
+    # plt.savefig('hist.png')
+    # plt.show()
+
+
+########################################################
+# task3
+########################################################
+# new plot
+    fig, ax2 = plt.subplots(figsize=(10, 6))
+    # function to calculate chi-square for a given bin
+    def chi_square(bin_edges, amplitude_values, fitted_params):
+        # left_bin_edges = bin_edges[bin_edges < 121]
+        left_bin_edges = bin_edges[bin_edges < SIGNAL_REGION[0]]
+        right_bin_edges = bin_edges[bin_edges > SIGNAL_REGION[1]]
+        # -1 because the bin edges are not included in the bin_heights
+        N_para_left = len(left_bin_edges)-1
+        N_para_right = len(right_bin_edges)-1
+        chi_left = get_B_chi(amplitude_values, (MASS_RANGE[0], left_bin_edges[0]), left_bin_edges, fitted_params[0], fitted_params[1])
+        chi_right = get_B_chi(amplitude_values, (right_bin_edges[-1], MASS_RANGE[1]), right_bin_edges, fitted_params[0], fitted_params[1])
+        total_chi = chi_left + chi_right
+        total_dof = N_para_left + N_para_right-4
+        # reduce chi-square to a single value
+        return total_chi/total_dof
+    # calculate chi-square for each bin
+    # for lambda +- 10% and A +- 10%, plot the reduced chi-square
+    
+
+    def iterate_chi(A, lamb):
+        lambda_range = np.linspace(lamb*0.9, lamb*1.1, 10)
+        A_range = np.linspace(A*0.9, A*1.1, 10) 
+        # Create meshgrid for 3D plotting
+        LAMBDA, A = np.meshgrid(A_range, lambda_range)
+        chi_square_values = np.zeros_like(LAMBDA) 
+        # Calculate chi-square values for each combination
+        for i, A_val in enumerate(tqdm(A_range)):
+            for j, lambda_ in enumerate(lambda_range):
+                chi_square_values[i, j] = chi_square(bin_edges, amplitude_values, 
+                                                [A_val, lambda_, fitted_params[2], 
+                                                    fitted_params[3], fitted_params[4]]) 
+        # Find the chi-square value closest to 1
+        min_diff_to_one = np.argmin(np.abs(chi_square_values - 1))
+        # Get the corresponding A and lambda values
+        A_idx = min_diff_to_one//len(A_range)
+        lambda_idx = min_diff_to_one%len(lambda_range)
+        A_min = A_range[A_idx]
+        lamb_min = lambda_range[lambda_idx]
+        chi_min = chi_square_values[A_idx, lambda_idx]
+        # save chi_square_values to a csv file
+        np.savetxt('chi_square_values.csv', chi_square_values, delimiter=',')
+        
+        return A_min, lamb_min, chi_min
+    A_min, lamb_min, chi_min = iterate_chi(fitted_params[0], fitted_params[1])
+    A_min_2, lamb_min_2, chi_min_2 = iterate_chi(A_min, lamb_min)
+    ic(A_min, lamb_min, chi_min)
+    ic(A_min_2, lamb_min_2, chi_min_2)
+
+
+    # # Create 3D plot
+    # fig = plt.figure(figsize=(12, 8))
+    # ax = fig.add_subplot(111, projection='3d')
+    
+    # # Plot the surface
+    # surf = ax.plot_surface(LAMBDA, A, chi_square_values, cmap='viridis')
+    
+    # # Add labels and title
+    # ax.set_xlabel('Lambda')
+    # ax.set_ylabel('A')
+    # ax.set_zlabel('Reduced Chi-square')
+    # ax.set_title('Chi-square Surface Plot')
+    
+    # # Add colorbar
+    # fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+    # plt.show()
+
 
 
 if __name__ == "__main__":
